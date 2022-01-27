@@ -26,27 +26,29 @@
 #define GET_STACK_OFS_H
 
 // arbitrary values
-#define SI_VALUE 0xf1e2d3c4b5a6f1e2
-#define DX_VALUE 0xa1b2c3d4e5f6a1b2
+#define ARG0_VALUE 0xf1e2d3c4b5a6f1e2
+#define ARG1_VALUE 0xa1b2c3d4e5f6a1b2
 
 #include <linux/types.h>
 
+#ifndef __aarch64__
 #define MAX_TASK_STRUCT 0x4000  // chosen arbitrarily, I think it'll be enough
+#else
+#define MAX_TASK_STRUCT 0x2000  // we reach the instr limit with 0x4000
+#endif
 
 #define STATUS_OK 0
 #define STATUS_ERROR 1
 #define STATUS_NOTFOUND 2
 #define STATUS_DUP 3
+#define STATUS_TAILCALL_FAILED 4
 
 struct output {
     __u32 status;
     __u32 offset;
 };
 
-#define PAGE_SIZE 4096
-// correct values for x86_64 without CONFIG_KASAN
-#define TOP_OF_KERNEL_STACK_PADDING 0
-#define THREAD_SIZE  (PAGE_SIZE << 2)
+#ifdef __x86_64__
 
 // copied from Linux. this doesn't change. I think...
 struct pt_regs {
@@ -83,5 +85,53 @@ struct pt_regs {
     unsigned long ss;
 /* top of stack page */
 };
+
+#elif defined(__aarch64__)
+
+typedef int s32;
+typedef unsigned int u32;
+typedef u32 __u32;
+typedef unsigned long u64;
+
+struct user_pt_regs {
+    __u64       regs[31];
+    __u64       sp;
+    __u64       pc;
+    __u64       pstate;
+};
+
+// this changes!
+// this copy is from 5.16.0
+struct pt_regs {
+    union {
+        struct user_pt_regs user_regs;
+        struct {
+            u64 regs[31];
+            u64 sp;
+            u64 pc;
+            u64 pstate;
+        };
+    };
+    u64 orig_x0;
+#ifdef __AARCH64EB__
+    u32 unused2;
+    s32 syscallno;
+#else
+    s32 syscallno;
+    u32 unused2;
+#endif
+    u64 sdei_ttbr1;
+    /* Only valid when ARM64_HAS_IRQ_PRIO_MASKING is enabled. */
+    u64 pmr_save;
+    u64 stackframe[2];
+
+    /* Only valid for some EL1 exceptions. */
+    u64 lockdep_hardirqs;
+    u64 exit_rcu;
+};
+
+#else
+#error "unknown arch"
+#endif
 
 #endif // GET_STACK_OFS_H

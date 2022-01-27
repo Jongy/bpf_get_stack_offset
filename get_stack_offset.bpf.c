@@ -29,7 +29,7 @@
 #include "get_stack_offset.h"
 
 
-#define NUM_TAIL_CALLS 26
+#define NUM_TAIL_CALLS 32
 #define TOTAL_ITERS (MAX_TASK_STRUCT / sizeof(__u64))
 #define ITERS_PER_PROG (TOTAL_ITERS / NUM_TAIL_CALLS)
 
@@ -117,12 +117,18 @@ int do_write(struct pt_regs *ctx)
             goto out;
         }
 
+#ifdef __x86_64__
+
         // make sure it's canonical (and in kernel space), otherwise we might get a WARN_ONCE
         // (see ex_handler_uaccess() in the kernel, happens on 5.4).
         if ((unsigned long)maybe_stack <= MIN_CANONICAL_KERNEL_ADDRESS) {
             continue;
         }
 
+#define PAGE_SIZE 4096
+// correct values for x86_64 without CONFIG_KASAN
+#define TOP_OF_KERNEL_STACK_PADDING 0
+#define THREAD_SIZE  (PAGE_SIZE << 2)
         // implementing task_pt_regs() for x86_64 here.
         struct pt_regs *regs = (struct pt_regs*)((unsigned long)maybe_stack + THREAD_SIZE - TOP_OF_KERNEL_STACK_PADDING) - 1;
 
@@ -132,7 +138,43 @@ int do_write(struct pt_regs *ctx)
         (void)bpf_probe_read(&pt_regs_si, sizeof(pt_regs_si), &regs->si);
         (void)bpf_probe_read(&pt_regs_dx, sizeof(pt_regs_dx), &regs->dx);
 
-        if (pt_regs_si== SI_VALUE && pt_regs_dx == DX_VALUE) {
+        const int match = pt_regs_si == ARG0_VALUE && pt_regs_dx == ARG1_VALUE;
+
+#elif defined(__aarch64__)
+
+#define KASAN_THREAD_SHIFT  0
+#define MIN_THREAD_SHIFT    (14 + KASAN_THREAD_SHIFT)
+// if CONFIG_VMAP_STACK is enabled & PAGE_SHIFT is 12, then this path gets selected:
+#define THREAD_SHIFT        MIN_THREAD_SHIFT
+
+#define THREAD_SIZE  (1UL << THREAD_SHIFT)
+        // implementing task_pt_regs() for arm64 here.
+        struct pt_regs *regs = (struct pt_regs*)((unsigned long)maybe_stack + THREAD_SIZE) - 1;
+
+        // now, the issue is that pt_regs changes in aarch64.
+        // I have a copy from 5.16.0. In 4.14 (which is the oldest aarch64 I suppose we'll meet),
+        // the struct has 2 less u64s, so we'll scan the 3 possible options here instead of just one.
+
+        int match = 0;
+        #pragma unroll
+        for (unsigned int j = 0; j < 3; j++) {
+            __u64 pt_regs_x1;
+            __u64 pt_regs_x2;
+            // ignore errors, "pointer" may not be a pointer at all.
+            // add "j" to the offset - to advance the address, in case the struct is smaller
+            // (struct is placed at the end of the stack, so if smaller, the registers
+            // will have a higher address).
+            (void)bpf_probe_read(&pt_regs_x1, sizeof(pt_regs_x1), &regs->regs[1 + j]);
+            (void)bpf_probe_read(&pt_regs_x2, sizeof(pt_regs_x2), &regs->regs[2 + j]);
+
+            match |= pt_regs_x1 == ARG0_VALUE && pt_regs_x2 == ARG1_VALUE;
+        }
+
+#else
+#error unsupported arch
+#endif
+
+        if (match) {
             if (out.status != STATUS_NOTFOUND) {
                 out.status = STATUS_DUP;
                 goto out;
@@ -168,7 +210,7 @@ int do_write(struct pt_regs *ctx)
         // (getting 'R0 !read_ok' for the next instruction after the call)
         // so I'm putting 0
         out.offset = 0;
-        out.status = STATUS_ERROR;
+        out.status = STATUS_TAILCALL_FAILED;
         goto out;
     }
 

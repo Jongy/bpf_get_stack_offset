@@ -77,7 +77,7 @@ int main(int argc, const char *argv[]) {
 
     // trigger the program; the 2 values (passed in rsi & rdx) will be kept on the stack
     // in pt_regs, and the program will search for them.
-    write(-1, (void*)SI_VALUE, DX_VALUE);
+    write(-1, (void*)ARG0_VALUE, ARG1_VALUE);
 
     int fd = bpf_map__fd(obj->maps.output);
     struct output output;
@@ -103,6 +103,16 @@ int main(int argc, const char *argv[]) {
 
     case STATUS_DUP:
         fprintf(stderr, "found multiple matching offsets!\n");
+        err = 1;
+        break;
+
+    case STATUS_TAILCALL_FAILED:
+        fprintf(stderr, "tail call failed!\n");
+        err = 1;
+        break;
+
+    default:
+        fprintf(stderr, "unknown status %d\n", output.status);
         err = 1;
         break;
     }
